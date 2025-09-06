@@ -1,0 +1,29 @@
+name: TRM Cloud Automation
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  run-trm:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Hazırla ve çalıştır
+        run: |
+          mkdir -p trm_reports
+          python -V
+          python trm_cloud/main.py | tee trm_reports/run.log
+
+      - name: Raporları artifact olarak yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: trm-reports
+          path: trm_reports
