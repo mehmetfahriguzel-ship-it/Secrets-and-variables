@@ -3,7 +3,7 @@ name: TRM Cloud Automation
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 17 * * *' # Türkiye saati 20:00
+    - cron: "17 17 * * *" # Türkiye saati 20:00
 
 jobs:
   run-trm:
@@ -15,13 +15,20 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.x'
+          python-version: '3.10'
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
       - name: Run TRM script
-        run: python trm_cloud/main.py
+        run: python trm_cloud/main.py > trm_report.log
+
+      - name: Upload report
+        uses: actions/upload-artifact@v3
+        with:
+          name: trm_report
+          path: trm_report.log
+
 
 
 
