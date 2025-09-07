@@ -12,10 +12,10 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.x'
+          python-version: '3.10'
 
       - name: Install dependencies
         run: |
@@ -24,14 +24,8 @@ jobs:
 
       - name: Run TRM script
         run: |
-          mkdir -p trm_reports
-          python trm_cloud/main.py | tee trm_reports/run.log
+          python trm_cloud/main.py
 
-      - name: Upload reports
-        uses: actions/upload-artifact@v3
-        with:
-          name: trm-reports
-          path: trm_reports/
 
           path: trm_reports
 
