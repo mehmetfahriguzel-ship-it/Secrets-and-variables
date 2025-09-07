@@ -27,3 +27,7 @@ jobs:
         with:
           name: trm-reports
           path: trm_reports
+
+          name: trm-reports
+          path: trm_reports
+orts
