@@ -3,7 +3,7 @@ name: TRM Cloud Automation
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 17 * * *'  # Türkiye saati 20:00
+    - cron: '0 17 * * *'
 
 jobs:
   run-trm:
@@ -22,6 +22,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: trm-reports
+          path: trm_reports
+
           path: trm_reports
 
 
