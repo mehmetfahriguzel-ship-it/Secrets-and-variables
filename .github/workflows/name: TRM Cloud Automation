@@ -1,12 +1,14 @@
 name: TRM Cloud Automation
 
 on:
-  workflow_dispatch: {}   # Elle çalıştırmak için
+  schedule:
+    # Her gün 20:00 Türkiye saati (UTC 17:00)
+    - cron: '0 17 * * *'
+  workflow_dispatch:
 
 jobs:
   run-trm:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -14,20 +16,21 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: '3.11'
 
-      - name: Hazırla ve çalıştır
+      - name: Install dependencies
         run: |
-          mkdir -p trm_reports
-          python -V
-          python trm_cloud/main.py | tee trm_reports/run.log
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-      - name: Raporları artifact olarak yükle
+      - name: Run TRM cloud pipeline
+        env:
+          TRM_ENV: "cloud"
+        run: python trm_cloud/main.py
+
+      - name: Upload reports as artifact
         uses: actions/upload-artifact@v4
         with:
           name: trm-reports
-          path: trm_reports
+          path: trm_reports/
 
-          name: trm-reports
-          path: trm_reports
-orts
