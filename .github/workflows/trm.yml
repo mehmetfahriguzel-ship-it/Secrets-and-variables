@@ -33,13 +33,3 @@ jobs:
           path: |
             TRM_REPORT_PRETTY.csv
             trm_reports/**
-
-
-
-
-
-
-
-          path: trm_reports
-
-
