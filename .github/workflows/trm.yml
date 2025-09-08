@@ -3,8 +3,7 @@ name: TRM Cloud Automation
 on:
   workflow_dispatch:
   schedule:
-    # Her gün 20:00 Türkiye (UTC 17:00)
-    - cron: "0 17 * * *"
+    - cron: '0 17 * * *' # Türkiye saati 20:00
 
 jobs:
   run-trm:
@@ -27,10 +26,13 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python trm_cloud/main.py
+        run: |
+          python trm_cloud/main.py
 
       - name: Upload reports
         uses: actions/upload-artifact@v4
         with:
           name: trm-reports
-          path: trm_reports/**
+          path: |
+            TRM_REPORT_PRETTY.csv
+            trm_reports/**
