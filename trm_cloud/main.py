@@ -1,8 +1,8 @@
+print("TRM Cloud Automation çalışıyor 🚀")
+
 try:
-    print("TRM Cloud Automation çalışıyor 🚀")
-
-    # Buraya ileride rapor, veri işleme veya başka otomasyon kodları eklenebilir.
-    # Şimdilik sadece test için basit bir çıktı veriyoruz.
-
+    # Test için küçük bir kod
+    x = 5 / 1
+    print("Kod başarıyla çalıştı:", x)
 except Exception as e:
     print("Hata oluştu:", e)
