@@ -3,7 +3,7 @@ name: TRM Cloud Automation
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 17 * * *' # Türkiye saati 20:00
+    - cron: '0 17 * * *'   # Türkiye 20:00
 
 jobs:
   run-trm:
@@ -15,17 +15,18 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run TRM script
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      - name: Scrape products
+        run: |
+          python trm_cloud/scrape.py
+
+      - name: Run TRM script (rapor)
         run: |
           python trm_cloud/main.py
 
@@ -34,5 +35,14 @@ jobs:
         with:
           name: trm-reports
           path: |
-            TRM_REPORT_PRETTY.csv
             trm_reports/**
+            TRM_REPORT_PRETTY.csv
+
+      # Telegram kullanmak istersen:
+      - name: Post to Telegram (optional)
+        if: ${{ env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != '' }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python trm_cloud/post_telegram.py
