@@ -1,4 +1,4 @@
-sku_name,price_try,commission
-SKU_A,199.90,18
-SKU_B,89.00,20
-SKU_C,349.00,15
+sku_name,price_try,commission,product_url,image_url
+Koton Slim Fit Tişört,199.90,18,https://trendurunlermarket.com/p/123?ref=AFFID,https://trendurunlermarket.com/img/123.jpg
+Mavi Jean 34/32,899.00,20,https://trendurunlermarket.com/p/456?ref=AFFID,https://trendurunlermarket.com/img/456.jpg
+LCW Spor Ayakkabı,749.00,15,https://trendurunlermarket.com/p/789?ref=AFFID,https://trendurunlermarket.com/img/789.jpg
