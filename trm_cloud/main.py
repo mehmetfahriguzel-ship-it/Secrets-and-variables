@@ -1,81 +1,90 @@
+# trm_cloud/main.py
 import os
+import math
+import json
+import time
 import pandas as pd
 from pathlib import Path
 import requests
 
-INPUT_CSV = Path("trm_cloud/products.csv")
-OUT_DIR = Path("trm_reports")
-OUT_CSV = OUT_DIR / "TRM_REPORT_PRETTY.csv"
+CSV_PATH = Path("TRM_REPORT_PRETTY.csv")
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-
-def load_products():
-    df = pd.read_csv(INPUT_CSV)
-    df.columns = [c.strip().lower() for c in df.columns]
-    for col in ["sku_name", "price_try", "commission", "product_url"]:
-        if col not in df.columns:
-            raise ValueError(f"Eksik kolon: {col}")
-    # opsiyonel image_url
-    if "image_url" not in df.columns:
-        df["image_url"] = ""
-    df["price_try"] = pd.to_numeric(df["price_try"], errors="coerce").fillna(0)
-    df["commission"] = pd.to_numeric(df["commission"], errors="coerce").fillna(0)
-    df["estimated_commission_try"] = (df["price_try"] * df["commission"] / 100).round(2)
-    return df
-
-def save_report(df: pd.DataFrame):
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    cols = ["sku_name","price_try","commission","estimated_commission_try","product_url","image_url"]
-    df[cols].to_csv(OUT_CSV, index=False, encoding="utf-8-sig")
-    print("Rapor yazıldı:", OUT_CSV)
-
-def send_telegram_text(text: str):
-    if not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID):
-        print("Telegram secrets yok; gönderim atlandı.")
+def ensure_csv():
+    """CSV yoksa örnek veri oluşturur; varsa dokunmaz."""
+    if CSV_PATH.exists():
         return
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    r = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "disable_web_page_preview": False})
-    print("Telegram text status:", r.status_code)
+    rows = [
+        {"sku_name": "SKU-A", "price": 199.90, "commission": 18.0, "estimated_commission_try": 35.98},
+        {"sku_name": "SKU-B", "price": 89.90,  "commission": 20.0, "estimated_commission_try": 17.98},
+        {"sku_name": "SKU-C", "price": 349.00, "commission": 15.0, "estimated_commission_try": 52.35},
+    ]
+    df = pd.DataFrame(rows)
+    df.to_csv(CSV_PATH, index=False, encoding="utf-8-sig")
 
-def send_telegram_photo(caption: str, image_url: str):
-    if not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID):
-        print("Telegram secrets yok; gönderim atlandı.")
-        return
-    if not image_url:
-        return send_telegram_text(caption)
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-    r = requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "caption": caption}, files=None, json=None, params=None, 
-                      # Telegram sendPhoto uzaktan URL'yi destekler:
-                      # requests ile 'data' ve 'files' yerine aşağıdaki gibi form-data göndermek yerine direkt parametreyle de çalışır.
-                      )
-    # Bazı istemcilerde yukarıdaki basit çağrı URL ekini desteklemediği için alternatif:
-    r = requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "caption": caption, "photo": image_url})
-    print("Telegram photo status:", r.status_code)
+def load_rows(limit=10):
+    df = pd.read_csv(CSV_PATH)
+    # sütun adlarını normalize et (boşluk vs. sorun olmasın)
+    df.columns = [c.strip() for c in df.columns]
+    # en fazla limit kadar gönder
+    return df.head(limit).to_dict(orient="records")
 
-def format_caption(row) -> str:
-    # Kısa ve vurucu tanıtım metni
-    return (f"🔥 {row['sku_name']}\n"
-            f"💸 Fiyat: {row['price_try']:.2f} TL\n"
-            f"💰 Komisyon: %{row['commission']:.0f} (Tahmini: {row['estimated_commission_try']:.2f} TL)\n"
-            f"🔗 Satın al: {row['product_url']}")
+def chunk_text(text, max_len=3900):
+    """Telegram 4096 sınırı için güvenli parçalama."""
+    parts, i = [], 0
+    while i < len(text):
+        parts.append(text[i:i+max_len])
+        i += max_len
+    return parts
+
+def send_telegram(text):
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        print("⚠️ TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID bulunamadı; mesaj atlanıyor.")
+        return False
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    ok_all = True
+    for part in chunk_text(text):
+        resp = requests.post(url, json={
+            "chat_id": chat_id,
+            "text": part,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True
+        }, timeout=30)
+        if resp.status_code != 200:
+            ok_all = False
+            print("Telegram hata:", resp.status_code, resp.text)
+        time.sleep(0.4)  # flood protection
+    return ok_all
+
+def build_message(rows):
+    lines = ["<b>TRM Günlük Ürün Özeti</b>\n"]
+    for r in rows:
+        name = str(r.get("sku_name", "—"))
+        price = r.get("price", "—")
+        com = r.get("commission", "—")
+        est = r.get("estimated_commission_try", "—")
+        line = f"• <b>{name}</b> — Fiyat: {price}₺ | Komisyon: {com}% | Tahmini Kazanç: <b>{est}₺</b>"
+        lines.append(line)
+    lines.append("\n#trendurunler #otopost #trm")
+    return "\n".join(lines)
 
 def main():
-    df = load_products()
-    save_report(df)
-
-    # Kaç ürünü paylaşalım? (örn. ilk 3)
-    share_count = min(3, len(df))
-    for i in range(share_count):
-        row = df.iloc[i]
-        caption = format_caption(row)
-        img = str(row.get("image_url") or "").strip()
-        if img:
-            send_telegram_photo(caption, img)
-        else:
-            send_telegram_text(caption)
-
-    print("Tanıtım gönderimleri tamamlandı ✅")
+    ensure_csv()
+    rows = load_rows(limit=10)
+    msg = build_message(rows)
+    print("Gönderilecek mesaj:\n", msg)
+    sent = send_telegram(msg)
+    if sent:
+        print("✅ Telegram’a gönderildi.")
+    else:
+        print("⚠️ Telegram gönderimi yapılmadı / başarısız.")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        # Loga düşsün, workflow kırmızıya boyansın diye exception’ı yeniden fırlat
+        print("Hata:", e)
+        raise
