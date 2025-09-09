@@ -1,71 +1,144 @@
-import csv, time
+# trm_cloud/scrape.py
+import csv
+import time
+import sys
 from pathlib import Path
+
 import requests
 from bs4 import BeautifulSoup
 
-BASE = "https://trendurunler.com"
-CATEGORIES = [
-    "/kategori/telefon-aksesuarlari",
-    "/kategori/oyun-aksesuarlari",
-    "/kategori/ev-yasam",
-]
-OUT_DIR = Path("trm_reports"); OUT_DIR.mkdir(exist_ok=True)
-OUT_CSV = OUT_DIR / "TRM_PRODUCTS.csv"
+BASE_URL = "https://trendurunlermarket.com"  # alan adın buysa bırak; değilse düzelt
 
-HEADERS = {"User-Agent":"Mozilla/5.0"}
+# --- Yalnızca şunları değiştirmen gerekebilir (site HTML'ine göre) ---
+PRODUCT_CARD_SEL = ".product-card, .product, .woocommerce ul.products li.product"
+TITLE_SEL        = ".product-title, .woocommerce-loop-product__title, h3, h2"
+PRICE_SEL        = ".price, .woocommerce-Price-amount, .amount"
+LINK_IN_CARD_SEL = "a"
+# ---------------------------------------------------------------------
 
-def get_soup(url):
-    r = requests.get(url, headers=HEADERS, timeout=30)
-    r.raise_for_status()
-    from bs4 import BeautifulSoup
-    return BeautifulSoup(r.text, "lxml")
+OUT_CSV = Path("TRM_PRODUCTS.csv")
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/125.0 Safari/537.36"
+}
 
-def parse_total_pages(soup):
-    pagers = soup.select("a.page, a.pagination, li.page a, ul.pagination li a")
-    pages = []
-    for a in pagers:
-        t = (a.get_text(strip=True) or "").replace("…","")
-        if t.isdigit(): pages.append(int(t))
-    return max(pages) if pages else 1
+def clean_text(x: str) -> str:
+    return " ".join((x or "").replace("\xa0", " ").strip().split())
 
-def parse_list(soup):
-    cards = soup.select(".product-card, .product, li.product, div.product, .card.product, .product-item")
-    rows = []
+def parse_price(text: str) -> str:
+    # Rakamları ve ayraçları koru, simgeleri at
+    if not text:
+        return ""
+    keep = []
+    for ch in text:
+        if ch.isdigit() or ch in ",.":
+            keep.append(ch)
+    s = "".join(keep)
+    # virgül-nokta normalize etmeye çalışma; CSV'ye string olarak yaz
+    return s
+
+def fetch(url: str) -> BeautifulSoup:
+    for attempt in range(3):
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=20)
+            r.raise_for_status()
+            return BeautifulSoup(r.text, "lxml")
+        except Exception:
+            if attempt == 2:
+                raise
+            time.sleep(1.2)
+    raise RuntimeError("fetch failed")
+
+def extract_products_from_page(soup: BeautifulSoup):
+    items = []
+    cards = soup.select(PRODUCT_CARD_SEL)
     for c in cards:
-        name_el  = c.select_one(".product-title, .name, h2, h3, .title")
-        price_el = c.select_one(".price, .product-price, .amount, .current-price")
-        link_el  = c.select_one("a[href]")
-        name  = name_el.get_text(" ", strip=True) if name_el else ""
-        price = price_el.get_text(" ", strip=True) if price_el else ""
-        href  = link_el["href"] if link_el and link_el.has_attr("href") else ""
-        if href.startswith("/"): href = BASE + href
-        if name and href: rows.append({"name": name, "price": price, "url": href})
-    return rows
+        # başlık
+        title_el = c.select_one(TITLE_SEL)
+        title = clean_text(title_el.get_text()) if title_el else ""
 
-def crawl_category(path):
-    url = BASE + path
-    soup = get_soup(url)
-    total = parse_total_pages(soup)
-    all_rows = []
-    for page in range(1, total+1):
-        page_url = url if page==1 else f"{url}?page={page}"
-        psoup = get_soup(page_url)
-        all_rows += parse_list(psoup)
-        time.sleep(1.0)
-    return all_rows
+        # fiyat
+        price_el = c.select_one(PRICE_SEL)
+        price = parse_price(price_el.get_text()) if price_el else ""
+
+        # link
+        a = c.select_one(LINK_IN_CARD_SEL)
+        href = a.get("href") if a else ""
+        if href and href.startswith("/"):
+            href = BASE_URL.rstrip("/") + href
+
+        if title and href:
+            items.append({
+                "name": title,
+                "price": price,
+                "url": href
+            })
+    return items
+
+def find_pagination_links(soup: BeautifulSoup):
+    # Basit: rel="next" ya da sayfa numaraları
+    next_links = []
+    next_a = soup.find("a", rel="next")
+    if next_a and next_a.get("href"):
+        next_links.append(next_a["href"])
+    # Alternatif: .pagination içindeki <a>
+    for a in soup.select(".pagination a, .page-numbers a"):
+        href = a.get("href")
+        if href:
+            next_links.append(href)
+    # uniq ve sırala
+    seen = set()
+    uniq = []
+    for u in next_links:
+        if u not in seen:
+            seen.add(u)
+            uniq.append(u)
+    return uniq
+
+def crawl_listing(start_urls, max_pages=10):
+    collected = []
+    to_visit = list(start_urls)
+    visited = set()
+    while to_visit and len(collected) < 500 and len(visited) < max_pages:
+        url = to_visit.pop(0)
+        if url in visited:
+            continue
+        visited.add(url)
+        soup = fetch(url)
+        collected.extend(extract_products_from_page(soup))
+        # sayfalama
+        for nxt in find_pagination_links(soup):
+            if nxt not in visited and nxt not in to_visit and len(visited) + len(to_visit) < max_pages:
+                if nxt.startswith("/"):
+                    nxt = BASE_URL.rstrip("/") + nxt
+                to_visit.append(nxt)
+    return collected
+
+def write_csv(rows, path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=["name", "price", "url"])
+        w.writeheader()
+        for r in rows:
+            w.writerow({"name": r["name"], "price": r["price"], "url": r["url"]})
 
 def main():
-    all_rows = []
-    for cat in CATEGORIES:
-        try:
-            all_rows += crawl_category(cat)
-        except Exception as e:
-            print("Kategori hatası:", cat, e)
-    with OUT_CSV.open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=["name","price","url"])
-        w.writeheader()
-        for r in all_rows: w.writerow(r)
-    print(f"OK | {len(all_rows)} ürün -> {OUT_CSV}")
+    # Başlangıç: ana sayfa ve muhtemel “/shop/”, “/urunler/” vb.
+    start = [
+        f"{BASE_URL}/",
+        f"{BASE_URL}/shop/",
+        f"{BASE_URL}/urunler/",
+    ]
+    try:
+        products = crawl_listing(start_urls=start, max_pages=12)
+        if not products:
+            print("Uyarı: Ürün bulunamadı; seçicileri (selectors) kontrol et.")
+        write_csv(products, OUT_CSV)
+        print(f"OK: {len(products)} ürün yazıldı -> {OUT_CSV}")
+    except Exception as e:
+        print("SCRAPE HATA:", e)
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
