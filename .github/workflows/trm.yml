@@ -1,22 +1,23 @@
 name: TRM Cloud Automation
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}
   schedule:
-    # Türkiye saati 20:00 (UTC 17:00)
-    - cron: '0 17 * * *'
+    - cron: "0 17 * * *"  # TR 20:00
 
 jobs:
   run-trm:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repo
+      # v4 kullan
         uses: actions/checkout@v4
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
@@ -26,15 +27,19 @@ jobs:
       - name: Scrape products
         run: |
           python trm_cloud/scrape.py
-          echo "scrape bitti; TRM_PRODUCTS.csv yazıldı."
-
-      - name: Build UTM links
-        run: |
-          python trm_cloud/build_utm.py
+          echo "Scrape bitti; TRM_PRODUCTS.csv yazıldı."
 
       - name: Run TRM script
         run: |
           python trm_cloud/main.py
+          echo "Rapor bitti; TRM_REPORT_PRETTY.csv hazır."
+
+      - name: Post to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python trm_cloud/post_telegram.py
 
       - name: Upload reports
         uses: actions/upload-artifact@v4
