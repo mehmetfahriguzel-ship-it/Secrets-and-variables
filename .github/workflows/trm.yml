@@ -8,6 +8,7 @@ on:
 jobs:
   run-trm:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -20,20 +21,33 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install --upgrade --no-cache-dir -r requirements.txt
-          python - <<'PY'
-          import pkgutil
-          def ok(m): 
-              print(m, '=>', bool(pkgutil.find_loader(m)))
-          for m in ['pandas','requests','bs4','lxml']:
-              ok(m)
-          PY
+          pip install -r requirements.txt
 
       - name: Scrape products
         run: |
           python trm_cloud/scrape.py
+          echo "==== ÖRNEK (ilk 5 satır) ===="
+          head -n 6 TRM_PRODUCTS.csv || true
 
       - name: Build UTM links
+        run: |
+          python - << 'PY'
+          import pandas as pd
+          from pathlib import Path
+          p = Path("TRM_PRODUCTS.csv")
+          if p.exists():
+            df = pd.read_csv(p)
+            if "url" in df.columns:
+              df["utm_url"] = df["url"].astype(str) + "?utm_source=github&utm_medium=actions&utm_campaign=trm"
+              df.to_csv(p, index=False)
+              print("UTM eklendi.")
+            else:
+              print("Uyarı: 'url' kolonu yok.")
+          else:
+            print("Uyarı: TRM_PRODUCTS.csv bulunamadı.")
+          PY
+
+      - name: Run TRM script
         run: |
           python trm_cloud/main.py
 
@@ -42,5 +56,5 @@ jobs:
         with:
           name: trm-reports
           path: |
-            TRM_REPORT_PRETTY.csv
             TRM_PRODUCTS.csv
+            TRM_REPORT_PRETTY.csv
