@@ -1,121 +1,143 @@
-# trm_cloud/scrape.py
-# -*- coding: utf-8 -*-
-import csv, re, time
+import re
+import csv
 from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup
 
-OUT = Path("TRM_PRODUCTS.csv")
+BASE = "https://www.trendurunlermarket.com"
+OUT_DIR = Path(".")
+PROD_CSV = OUT_DIR / "TRM_PRODUCTS.csv"
 
-# --- Sabitler ---
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.8",
+    "Cache-Control": "no-cache",
 }
-TIMEOUT = 20
 
-# Bu liste, gönderdiğin kategori linklerinden derlendi (dokümandaki linkler).
-CATEGORIES = [
-    "https://www.trendurunlermarket.com/giyim-C4/",
-    "https://www.trendurunlermarket.com/hobi--kitap-C11/",
-    "https://www.trendurunlermarket.com/spor--outdoor-C10/",
-    "https://www.trendurunlermarket.com/mucevher--saat-C9/",
-    "https://www.trendurunlermarket.com/kozmetik--bakim-C8/",
-    "https://www.trendurunlermarket.com/anne--bebek-C7/",
-    "https://www.trendurunlermarket.com/ev--yasam-C6/",
-    "https://www.trendurunlermarket.com/elektronik-C5/",
-    # “Fırsatlar” sayfası ayrı yapıda; link yok demiştin, o yüzden eklemedim.
-]
+# --------- yardımcılar ---------
+def get(url: str) -> requests.Response:
+    r = requests.get(url, headers=HEADERS, timeout=30)
+    r.raise_for_status()
+    return r
 
-# --- Yardımcılar ---
-_price_num = re.compile(r"[\d.,]+")
+def clean_text(s: str) -> str:
+    return " ".join(s.split()).strip()
 
-def clean_text(x: str) -> str:
-    return re.sub(r"\s+", " ", x).strip()
-
-def parse_price(txt: str) -> float | None:
-    m = _price_num.search(txt.replace("\xa0", " "))
-    if not m: 
+def parse_price(text: str) -> float | None:
+    """
+    '1.299,90 TL' -> 1299.90
+    '1299.90'     -> 1299.90
+    """
+    if not text:
         return None
-    s = m.group(0).replace(".", "").replace(",", ".")
+    t = text.lower().replace("tl", "").replace("₺", "").strip()
+    t = t.replace(".", "").replace(",", ".")
     try:
-        return float(s)
-    except:
+        return float(re.findall(r"-?\d+(\.\d+)?", t)[0])
+    except Exception:
         return None
 
-def extract_products(html: str, base_url: str) -> list[dict]:
-    """
-    Tema farklarına dayanıklı, esnek seçiciler.
-    """
-    soup = BeautifulSoup(html, "html.parser")
+# --------- kategori linklerini topla (otomatik) ---------
+def discover_category_links() -> list[str]:
+    links: set[str] = set()
+    resp = get(BASE + "/")
+    soup = BeautifulSoup(resp.text, "lxml")
 
-    # 1) En yaygın kutular
-    cards = (
-        soup.select(".product, .product-item, .product-card, li.product, .col-product")
-        or soup.select("div[class*='product'] a[href*='-P']")  # bazı temalar
-    )
+    # Menüde kategori görünen tüm linkler: '-C<rakamlar>' kalıbı
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if href.startswith("http"):
+            url = href
+        else:
+            url = BASE + "/" + href.lstrip("/")
 
+        if re.search(r"-C\d+/?$", url):
+            links.add(url.rstrip("/") + "/")
+
+    return sorted(links)
+
+# --------- kategori sayfasından ürünleri çek ---------
+def scrape_category(cat_url: str) -> list[dict]:
     items = []
+    try:
+        resp = get(cat_url)
+    except requests.HTTPError as e:
+        print(f"[SKIP] {cat_url} -> HTTP {e.response.status_code}")
+        return items
+    except Exception as e:
+        print(f"[SKIP] {cat_url} -> {e}")
+        return items
+
+    soup = BeautifulSoup(resp.text, "lxml")
+
+    # Muhtemel ürün kutuları (generic seçimler)
+    candidates = []
+    candidates += soup.select('[class*="product"] a[href]')
+    candidates += soup.select('a[href*="/urun"]')
+    candidates += soup.select('a[href*="-p-"]')
+    candidates += soup.select('a[href*="/product"]')
+
     seen = set()
+    for a in candidates:
+        href = a.get("href", "")
+        name = clean_text(a.get("title") or a.get_text() or "")
+        if not name:
+            continue
 
-    for card in cards:
-        # Ürün linki
-        a = card.select_one("a[href]") or card.find("a", href=True)
-        url = (a["href"] if a else "").strip()
-        if url and url.startswith("/"):
-            url = base_url.rstrip("/") + url
-        # İsim
-        name_el = (
-            card.select_one(".product-name, .name, .title, h3, h2, .productTitle")
-            or (a if a and a.text.strip() else None)
-        )
-        name = clean_text(name_el.get_text()) if name_el else ""
-        # Fiyat
-        price_el = card.select_one(
-            ".price, .product-price, .current, .new-price, .urunFiyat, [class*=price]"
-        )
-        price = parse_price(price_el.get_text()) if price_el else None
+        if href.startswith("http"):
+            url = href
+        else:
+            url = BASE + "/" + href.lstrip("/")
 
-        # Filtrele
         key = (name, url)
-        if name and url and key not in seen:
-            seen.add(key)
-            items.append({"name": name, "price": price, "url": url})
+        if key in seen:
+            continue
+        seen.add(key)
+
+        # Fiyatı bul: aynı kartın içinde ya da yakınında
+        price = None
+        card = a.find_parent()
+        for _ in range(4):
+            if not card:
+                break
+            # sınıfında 'price' ya da 'fiyat' geçen her şeyi dene
+            p_nodes = []
+            p_nodes += card.select('[class*="price"]')
+            p_nodes += card.select('[class*="fiyat"]')
+            for p in p_nodes:
+                price = parse_price(clean_text(p.get_text()))
+                if price:
+                    break
+            if price:
+                break
+            card = card.find_parent()
+
+        items.append({"name": name, "price": price, "url": url})
 
     return items
 
-def fetch(url: str) -> str:
-    r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
-    if r.status_code != 200:
-        raise RuntimeError(f"SCRAPE HATA: HTTP {r.status_code} -> {url}")
-    return r.text
-
 def main():
+    cat_links = discover_category_links()
+    if not cat_links:
+        print("SCRAPE NOT: Kategori linki bulunamadı, ana sayfa yapısı değişmiş olabilir.")
+        return
+
     all_rows = []
+    for cat in cat_links:
+        print(f"[CAT] {cat}")
+        rows = scrape_category(cat)
+        print(f"  -> {len(rows)} ürün")
+        all_rows.extend(rows)
 
-    for cat in CATEGORIES:
-        base = "https://www.trendurunlermarket.com"
-        try:
-            html = fetch(cat)
-            rows = extract_products(html, base)
-            # Boş gelirse sorun etmeyelim; site tema/HTML farklı olabilir
-            if not rows:
-                print(f"Uyarı: {cat} sayfasında ürün seçilemedi (tema farkı olabilir).")
-            all_rows.extend(rows)
-            time.sleep(1.0)
-        except Exception as e:
-            print(f"SCRAPE Uyarı: {e}")
-
-    # En azından başlıkla birlikte kaydet
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    with OUT.open("w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(["name", "price", "url"])
+    # Boş gelirse yine de dosya oluştur
+    with open(PROD_CSV, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=["name", "price", "url"])
+        w.writeheader()
         for r in all_rows:
-            w.writerow([r["name"], ("" if r["price"] is None else r["price"]), r["url"]])
+            w.writerow(r)
 
-    print(f"TOPLAM KAYIT: {len(all_rows)} -> {OUT}")
+    print(f"SCRAPE OK: {PROD_CSV.name} yazıldı ({len(all_rows)} satır).")
 
 if __name__ == "__main__":
     main()
