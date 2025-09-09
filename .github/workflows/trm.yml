@@ -1,12 +1,14 @@
 name: TRM Cloud Automation
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+  schedule:
+    # Türkiye saati 20:00 (UTC 17:00)
+    - cron: '0 17 * * *'
 
 jobs:
   run-trm:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -24,12 +26,15 @@ jobs:
       - name: Scrape products
         run: |
           python trm_cloud/scrape.py
-          echo "Scrape bitti; TRM_PRODUCTS.csv yazıldı."
+          echo "scrape bitti; TRM_PRODUCTS.csv yazıldı."
+
+      - name: Build UTM links
+        run: |
+          python trm_cloud/build_utm.py
 
       - name: Run TRM script
         run: |
           python trm_cloud/main.py
-          echo "Rapor bitti; TRM_REPORT_PRETTY.csv hazır."
 
       - name: Upload reports
         uses: actions/upload-artifact@v4
