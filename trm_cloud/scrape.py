@@ -1,128 +1,124 @@
-# trm_cloud/scrape.py
-import os
+# -*- coding: utf-8 -*-
+"""
+Trend Ürünler Market kategori sayfalarından ürün adı, fiyat ve ürün URL'lerini çeker.
+- KATEGORI_URLLERI listesine birebir tarayıcıdan kopyaladığın kategori linklerini koy.
+- Site yapısı Opencart/benzeri ise aşağıdaki seçiciler çalışır; olmazsa alternatiflere düşer.
+"""
+
 import csv
-import sys
-from urllib.parse import urljoin
+import time
+from pathlib import Path
+from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
 
-BASE = "https://www.trendurunlermarket.com"
-
-# Denenecek sayfa yolları (hangi çalışırsa onu kullanacağız)
-CANDIDATES = [
-    "/",                 # ana sayfa
-    "/shop",             # WooCommerce varsayılan
-    "/magaza",           # TR tema kullananlar
-    "/urunler",          # sık kullanılan
-    "/store",            # bazı temalar
-    "/products",         # bazı temalar
+# >>> BURAYA KENDİ KATEGORİ LİNKLERİNİ YAPIŞTIR <<<
+KATEGORI_URLLERI = [
+    "https://www.trendurunlermarket.com/giyim-C4/",
+    "https://www.trendurunlermarket.com/otomotiv-C13/",
+    "https://www.trendurunlermarket.com/hobi-kitap-C11/",
+    "https://www.trendurunlermarket.com/mucevher-saat-C7/",
 ]
+# --------------------------------------------------
 
-OUT_PATH = "TRM_PRODUCTS.csv"
+# Çıkış dosyası
+OUT_DIR = Path("trm_reports")
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+OUT_CSV = OUT_DIR / "TRM_PRODUCTS.csv"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 }
 
-def fetch(url):
-    r = requests.get(url, headers=HEADERS, timeout=20)
-    return r
+# Farklı tema olasılıkları için birden fazla seçici dene
+SELECTOR_KUME = [
+    # Opencart klasik
+    {"kutu": ".product-layout .product-thumb",
+     "ad": ".caption h4 a, h4 a",
+     "fiyat": ".price"},
+    # Alternatif grid
+    {"kutu": ".product-grid .product-thumb, .product-item",
+     "ad": ".product-name a, .title a, .name a",
+     "fiyat": ".price, .product-price"},
+    # Prestashop/benzeri
+    {"kutu": ".product-miniature",
+     "ad": ".product-title a",
+     "fiyat": ".price"}
+]
 
-def pick_working_listing():
-    """Aday yolları dene; 200 dönen ve içinde ürün linki sinyali olan ilk sayfayı seç."""
-    for path in CANDIDATES:
-        full = urljoin(BASE, path)
-        try:
-            r = fetch(full)
-        except Exception as e:
-            print(f"[SKIP] {full} -> req error: {e}")
-            continue
+def temiz_fiyat(text: str) -> str:
+    if not text:
+        return ""
+    t = " ".join(text.split())
+    # virgül/nokta karışıklığına girmeden ham metni dön
+    return t
 
-        if r.status_code != 200:
-            print(f"[SKIP] {full} -> HTTP {r.status_code}")
-            continue
+def parse_sayfa(url: str):
+    r = requests.get(url, headers=HEADERS, timeout=30)
+    if r.status_code == 404:
+        raise RuntimeError(f"SCRAPE HATA: 404 Not Found: {url}")
+    r.raise_for_status()
+    return BeautifulSoup(r.text, "lxml")
 
-        soup = BeautifulSoup(r.text, "lxml")
+def urunleri_cikar(soup: BeautifulSoup, base: str):
+    for sel in SELECTOR_KUME:
+        kartlar = soup.select(sel["kutu"])
+        if kartlar:
+            for k in kartlar:
+                a = k.select_one(sel["ad"])
+                f = k.select_one(sel["fiyat"])
+                ad = (a.get_text(strip=True) if a else "").strip()
+                href = a.get("href") if a and a.has_attr("href") else ""
+                link = urljoin(base, href) if href else ""
+                fiyat = temiz_fiyat(f.get_text() if f else "")
+                if ad and link:
+                    yield {"name": ad, "price": fiyat, "url": link}
+            return  # bu seçici setiyle bulduysak diğerlerine bakmaya gerek yok
 
-        # Ürün bağlantısı için yaygın seçiciler
-        product_links = soup.select(
-            "a.woocommerce-LoopProduct-link, a.product.type-product, a[href*='/product/'], a[href*='/urun/'], a[href*='?product=']"
-        )
-        if product_links:
-            print(f"[OK] Liste sayfası bulundu: {full}  (ürün sinyali tespit edildi)")
-            return full, soup
+def sonraki_sayfa_linki(soup: BeautifulSoup, base: str):
+    # ">" veya rel="next" olan linkleri dene
+    nxt = soup.select_one("ul.pagination li.active + li a, a[rel=next]")
+    if not nxt:
+        # bazı temalarda son sayfa linki .next ile
+        nxt = soup.select_one(".pagination .next a, .results .next a")
+    if nxt and nxt.get("href"):
+        return urljoin(base, nxt["href"])
+    return None
 
-        # Liste sinyali görülmediyse yine de bu sayfanın ürün kart seçicilerini deneriz:
-        grid_cards = soup.select(".products .product, ul.products li.product, .product-grid .product")
-        if grid_cards:
-            print(f"[OK] Liste sayfası bulundu: {full}  (grid tespit edildi)")
-            return full, soup
-
-        print(f"[SKIP] {full} -> 200 ama ürün sinyali yok")
-
-    return None, None
-
-def parse_listing(soup, base_url):
-    """Liste sayfasından ürün adı, fiyat ve linkleri çıkar."""
-    items = []
-
-    # En yaygın kart seçicileri
-    cards = soup.select("ul.products li.product, .products .product, .product-grid .product")
-    if not cards:
-        # Alternatif: doğrudan link seçicileri
-        links = soup.select("a.woocommerce-LoopProduct-link, a[href*='/product/'], a[href*='/urun/']")
-        for a in links[:100]:
-            name = (a.get_text(strip=True) or "")[:150]
-            href = a.get("href") or ""
-            if not href:
-                continue
-            url = href if href.startswith("http") else urljoin(base_url, href)
-            # Fiyatı yakınındaki etiketlerden tahmin
-            price_el = a.find_next(class_="price")
-            price_text = price_el.get_text(" ", strip=True) if price_el else ""
-            items.append((name, price_text, url))
-        return items
-
-    for card in cards[:100]:  # güvenlik için ilk 100
-        # İsim
-        name_el = card.select_one(".woocommerce-loop-product__title, .product-title, h2, h3")
-        name = name_el.get_text(" ", strip=True)[:150] if name_el else ""
-
-        # Link
-        a = card.select_one("a.woocommerce-LoopProduct-link, a[href*='/product/'], a[href*='/urun/']")
-        href = a.get("href") if a else ""
-        url = href if href.startswith("http") else (urljoin(base_url, href) if href else "")
-
-        # Fiyat
-        price_el = card.select_one(".price, .woocommerce-Price-amount, .amount")
-        price = price_el.get_text(" ", strip=True) if price_el else ""
-
-        if name or url:
-            items.append((name, price, url))
-
-    return items
+def tarat(kategori_url: str):
+    base = "{uri.scheme}://{uri.netloc}".format(uri=urlparse(kategori_url))
+    url = kategori_url
+    sayac = 1
+    while url:
+        print(f"[SCRAPE] {url}")
+        soup = parse_sayfa(url)
+        for u in urunleri_cikar(soup, base):
+            yield u
+        url = sonraki_sayfa_linki(soup, base)
+        sayac += 1
+        if sayac > 50:  # sonsuz döngü güvenliği
+            break
+        time.sleep(0.8)  # nazik olalım
 
 def main():
-    listing_url, soup = pick_working_listing()
-    if not soup:
-        print(f"SCRAPE HATA: Uygun liste sayfası bulunamadı. Denenen yollar: {', '.join(CANDIDATES)}")
-        sys.exit(1)
+    tum = []
+    for kat in KATEGORI_URLLERI:
+        try:
+            for ur in tarat(kat):
+                tum.append(ur)
+        except Exception as e:
+            print(f"[SCRAPE UYARI] {kat} -> {e}")
 
-    items = parse_listing(soup, listing_url)
-
-    if not items:
-        print(f"SCRAPE UYARI: Ürün bulunamadı: {listing_url}")
-        sys.exit(1)
-
-    # CSV yaz
-    with open(OUT_PATH, "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(["name", "price", "url"])
-        for row in items:
+    # Dosyaya yaz
+    with OUT_CSV.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=["name", "price", "url"])
+        w.writeheader()
+        for row in tum:
             w.writerow(row)
 
-    print(f"SCRAPE OK: {len(items)} ürün → {OUT_PATH}")
+    print(f"[OK] {len(tum)} ürün yazıldı: {OUT_CSV}")
 
 if __name__ == "__main__":
     main()
