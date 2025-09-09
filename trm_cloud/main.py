@@ -1,90 +1,57 @@
-# trm_cloud/main.py
-import os
-import math
-import json
-import time
-import pandas as pd
+import csv
 from pathlib import Path
-import requests
 
-CSV_PATH = Path("TRM_REPORT_PRETTY.csv")
+import pandas as pd
 
-def ensure_csv():
-    """CSV yoksa örnek veri oluşturur; varsa dokunmaz."""
-    if CSV_PATH.exists():
-        return
-    rows = [
-        {"sku_name": "SKU-A", "price": 199.90, "commission": 18.0, "estimated_commission_try": 35.98},
-        {"sku_name": "SKU-B", "price": 89.90,  "commission": 20.0, "estimated_commission_try": 17.98},
-        {"sku_name": "SKU-C", "price": 349.00, "commission": 15.0, "estimated_commission_try": 52.35},
-    ]
-    df = pd.DataFrame(rows)
-    df.to_csv(CSV_PATH, index=False, encoding="utf-8-sig")
+PROD_CSV = Path("TRM_PRODUCTS.csv")
+REPORT_CSV = Path("TRM_REPORT_PRETTY.csv")
 
-def load_rows(limit=10):
-    df = pd.read_csv(CSV_PATH)
-    # sütun adlarını normalize et (boşluk vs. sorun olmasın)
-    df.columns = [c.strip() for c in df.columns]
-    # en fazla limit kadar gönder
-    return df.head(limit).to_dict(orient="records")
+DEFAULT_ROWS = [
+    {"name": "Acer X A", "price": 199.90, "url": "https://example.com/a"},
+    {"name": "Acer B",   "price":  89.90, "url": "https://example.com/b"},
+    {"name": "Acer C",   "price": 349.00, "url": "https://example.com/c"},
+    {"name": "Acer D",   "price":  59.90, "url": "https://example.com/d"},
+    {"name": "Acer E",   "price": 129.02, "url": "https://example.com/e"},
+]
 
-def chunk_text(text, max_len=3900):
-    """Telegram 4096 sınırı için güvenli parçalama."""
-    parts, i = [], 0
-    while i < len(text):
-        parts.append(text[i:i+max_len])
-        i += max_len
-    return parts
+def read_products() -> pd.DataFrame:
+    if PROD_CSV.exists():
+        df = pd.read_csv(PROD_CSV)
+    else:
+        df = pd.DataFrame(DEFAULT_ROWS)
 
-def send_telegram(text):
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    if not token or not chat_id:
-        print("⚠️ TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID bulunamadı; mesaj atlanıyor.")
-        return False
+    # fiyatı normalize et
+    def norm_price(v):
+        if pd.isna(v):
+            return None
+        if isinstance(v, (int, float)):
+            return float(v)
+        s = str(v).lower().replace("tl", "").replace("₺", "").strip()
+        s = s.replace(".", "").replace(",", ".")
+        try:
+            return float(s)
+        except Exception:
+            return None
 
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    ok_all = True
-    for part in chunk_text(text):
-        resp = requests.post(url, json={
-            "chat_id": chat_id,
-            "text": part,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True
-        }, timeout=30)
-        if resp.status_code != 200:
-            ok_all = False
-            print("Telegram hata:", resp.status_code, resp.text)
-        time.sleep(0.4)  # flood protection
-    return ok_all
-
-def build_message(rows):
-    lines = ["<b>TRM Günlük Ürün Özeti</b>\n"]
-    for r in rows:
-        name = str(r.get("sku_name", "—"))
-        price = r.get("price", "—")
-        com = r.get("commission", "—")
-        est = r.get("estimated_commission_try", "—")
-        line = f"• <b>{name}</b> — Fiyat: {price}₺ | Komisyon: {com}% | Tahmini Kazanç: <b>{est}₺</b>"
-        lines.append(line)
-    lines.append("\n#trendurunler #otopost #trm")
-    return "\n".join(lines)
+    df["price"] = df["price"].apply(norm_price)
+    return df
 
 def main():
-    ensure_csv()
-    rows = load_rows(limit=10)
-    msg = build_message(rows)
-    print("Gönderilecek mesaj:\n", msg)
-    sent = send_telegram(msg)
-    if sent:
-        print("✅ Telegram’a gönderildi.")
-    else:
-        print("⚠️ Telegram gönderimi yapılmadı / başarısız.")
+    df = read_products()
+
+    if "name" not in df.columns:
+        df["name"] = ""
+
+    df["commission"] = 18.0
+    df["estimated_commission_try"] = (df["price"].fillna(0) * df["commission"] / 100).round(2)
+
+    # sku üret
+    df = df.reset_index(drop=True)
+    df["sku"] = df.index.map(lambda i: f"SKU-{chr(65 + (i % 26))}")
+
+    out = df[["sku", "name", "price", "commission", "estimated_commission_try"]]
+    out.to_csv(REPORT_CSV, index=False, encoding="utf-8")
+    print("RAPOR:", REPORT_CSV.name, "hazır.")
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        # Loga düşsün, workflow kırmızıya boyansın diye exception’ı yeniden fırlat
-        print("Hata:", e)
-        raise
+    main()
