@@ -11,7 +11,6 @@ jobs:
 
     steps:
       - name: Checkout repo
-      # v4 kullan
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -34,12 +33,15 @@ jobs:
           python trm_cloud/main.py
           echo "Rapor bitti; TRM_REPORT_PRETTY.csv hazır."
 
-      - name: Post to Telegram
+      - name: Pull from Telegram
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_API_ID:    ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH:  ${{ secrets.TELEGRAM_API_HASH }}
+          TELEGRAM_SESSION:   ${{ secrets.TELEGRAM_SESSION }}
+          TELEGRAM_SOURCE:    ${{ secrets.TELEGRAM_SOURCE }}
+          TELEGRAM_LIMIT:     ${{ secrets.TELEGRAM_LIMIT }}
         run: |
-          python trm_cloud/post_telegram.py
+          python trm_cloud/tg_pull.py
 
       - name: Upload reports
         uses: actions/upload-artifact@v4
@@ -48,3 +50,4 @@ jobs:
           path: |
             TRM_PRODUCTS.csv
             TRM_REPORT_PRETTY.csv
+            trm_reports/TELEGRAM_PULL.csv
