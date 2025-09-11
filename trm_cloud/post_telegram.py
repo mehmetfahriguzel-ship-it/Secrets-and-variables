@@ -1,64 +1,88 @@
-# -*- coding: utf-8 -*-
-import os, time, csv
-from pathlib import Path
-import requests
+import os, csv, json, asyncio
+from telethon import TelegramClient
+from telethon.sessions import StringSession
+from telethon.tl.functions.channels import JoinChannelRequest
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
-API       = f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else None
+API_ID = int(os.getenv("TELEGRAM_API_ID"))
+API_HASH = os.getenv("TELEGRAM_API_HASH")
+SESSION = os.getenv("TELEGRAM_SESSION")
+TARGET = os.getenv("TELEGRAM_TARGET")  # @kanaladi veya https://t.me/kanaladi
 
-PRODUCTS_CSV = Path("TRM_PRODUCTS.csv")          # name, price, url
-MAX_ITEMS    = 20                                 # İlk 20 ürünü gönder
-PAUSE_SEC    = 0.8                                # Mesajlar arasında bekleme
+CSV_FILE = "TRM_PRODUCTS.csv"
+STATE_FILE = "trm_cloud/_posted_state.json"
+BATCH_SIZE = int(os.getenv("TELEGRAM_BATCH", "20"))
 
-def send_text(text: str):
-    if not (API and CHAT_ID):
-        print("TELEGRAM SECRETS YOK → gönderim atlandı.")
-        return
-    try:
-        r = requests.post(f"{API}/sendMessage",
-                          data={"chat_id": CHAT_ID, "text": text, "disable_web_page_preview": True},
-                          timeout=30)
-        r.raise_for_status()
-        print("OK text")
-    except Exception as e:
-        print("ERR text:", e)
+def load_state():
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {"posted_urls": []}
 
-def main():
-    if not PRODUCTS_CSV.exists():
-        print("Ürün dosyası yok:", PRODUCTS_CSV)
-        return
+def save_state(st):
+    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(st, f, ensure_ascii=False)
 
+def read_products():
     rows = []
-    with PRODUCTS_CSV.open(encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for r in reader:
+    with open(CSV_FILE, encoding="utf-8") as f:
+        for i, r in enumerate(csv.DictReader(f)):
             rows.append(r)
+    return rows
 
-    if not rows:
-        send_text("⚠️ Ürün bulunamadı.")
+def caption(r):
+    parts = [f"🛍️ {r['name']}"]
+    if r.get("price"):
+        parts.append(f"💸 {r['price']}")
+    parts.append(f"🔗 {r['url']}")
+    return "\n".join(parts)
+
+async def main():
+    state = load_state()
+    posted = set(state.get("posted_urls", []))
+
+    products = [p for p in read_products() if p["url"] not in posted]
+    if not products:
+        print("Gönderilecek yeni ürün yok.")
         return
 
-    send_text("✅ Trend Ürünler Market — Otomatik Paylaşım Başladı")
-
-    sent = 0
-    for r in rows[:MAX_ITEMS]:
-        name = (r.get("name") or "").strip()
-        price = (r.get("price") or "").strip()
-        url = (r.get("url") or "").strip()
-
-        # Fiyatı güzel göster
-        if price and isinstance(price, str) and price.replace(".", "", 1).isdigit():
+    async with TelegramClient(StringSession(SESSION), API_ID, API_HASH) as client:
+        # Hedefe eriş (gerekirse katıl)
+        try:
+            if TARGET.startswith("http"):
+                entity = await client.get_entity(TARGET)
+            elif TARGET.startswith("@"):
+                entity = await client.get_entity(TARGET)
+            else:
+                entity = await client.get_entity(f"@{TARGET}")
+        except Exception:
+            # davet linkiyse katılmayı dene
             try:
-                price = f"{float(price):.2f} ₺"
-            except:
-                pass
-        msg = f"• {name}\nFiyat: {price}\n{url}"
-        send_text(msg)
-        sent += 1
-        time.sleep(PAUSE_SEC)
+                await client(JoinChannelRequest(TARGET))
+                entity = await client.get_entity(TARGET)
+            except Exception as e:
+                print(f"[HATA] Kanala ulaşılamadı: {e}")
+                return
 
-    send_text(f"✅ Bitti. Toplam {sent} ürün paylaşıldı.")
+        count = 0
+        for r in products:
+            try:
+                img = r["image"] if r["image"] else None
+                text = caption(r)
+                if img:
+                    await client.send_file(entity, img, caption=text)
+                else:
+                    await client.send_message(entity, text)
+                posted.add(r["url"])
+                count += 1
+                if count >= BATCH_SIZE:
+                    break
+            except Exception as e:
+                print(f"[WARN] Gönderilemedi: {r['url']} → {e}")
+
+    state["posted_urls"] = list(posted)
+    save_state(state)
+    print(f"✓ Telegram’a gönderilen ürün sayısı: {count}")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
