@@ -1,84 +1,130 @@
 # trm_cloud/post_telegram.py
-# Çalışma: GitHub Secrets -> TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION,
-# TELEGRAM_SOURCE (tek kanal @kanal veya birden çok satırlı liste), TELEGRAM_BATCH (opsiyonel).
-# Gönderim: TRM_REPORT_PRETTY.csv'den okur, her ürünü mesaj olarak yollar.
-
 import os
 import csv
 import asyncio
+import pandas as pd
 from telethon import TelegramClient
+from telethon.sessions import StringSession
+from telethon.errors import FloodWaitError
 
-API_ID = int(os.environ["TELEGRAM_API_ID"])
-API_HASH = os.environ["TELEGRAM_API_HASH"]
-SESSION = os.environ["TELEGRAM_SESSION"]
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PRETTY_CSV = os.path.join(ROOT, "..", "TRM_REPORT_PRETTY.csv")
+LOG_CSV = os.path.join(ROOT, "..", "TELEGRAM_POST_LOG.csv")
 
-# Kaynak/ hedef kanal(lar): birden fazla satır desteklenir (her satır bir kanal veya tam t.me linki)
-RAW_SOURCE = os.environ.get("TELEGRAM_SOURCE", "").strip()
-SOURCES = [s.strip() for s in RAW_SOURCE.splitlines() if s.strip()]
+API_ID = int(os.getenv("TELEGRAM_API_ID", "0") or "0")
+API_HASH = os.getenv("TELEGRAM_API_HASH", "")
+SESSION = os.getenv("TELEGRAM_SESSION", "")
+SOURCES_RAW = os.getenv("TELEGRAM_SOURCE", "")  # çoklu satır destekli
+BATCH = int(os.getenv("TELEGRAM_BATCH", "20") or "20")
 
-# Kaç mesaj yollayalım (int’e çevrilemezse 20)
-try:
-    BATCH_SIZE = int(os.environ.get("TELEGRAM_BATCH", "20").strip())
-except Exception:
-    BATCH_SIZE = 20
+def load_sources():
+    if not SOURCES_RAW.strip():
+        return []
+    # newline, virgül ve boşluk ayırıcı
+    parts = []
+    for ln in SOURCES_RAW.replace(",", "\n").splitlines():
+        s = ln.strip()
+        if not s:
+            continue
+        # t.me/ links → @handle
+        if "t.me/" in s and not s.startswith("@"):
+            s = s.split("t.me/")[-1].strip("/")
+            if not s.startswith("@"):
+                s = f"@{s}"
+        parts.append(s)
+    return parts
 
-CSV_PATH = "TRM_REPORT_PRETTY.csv"
+def load_log():
+    posted = set()
+    if os.path.exists(LOG_CSV):
+        with open(LOG_CSV, "r", encoding="utf-8") as f:
+            r = csv.DictReader(f)
+            for row in r:
+                posted.add(row.get("sku","").strip())
+    return posted
 
-def load_rows(path: str, limit: int):
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"CSV bulunamadı: {path}")
+def append_log(rows):
+    exists = os.path.exists(LOG_CSV)
+    with open(LOG_CSV, "a", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["sku","name"])
+        if not exists:
+            w.writeheader()
+        for r in rows:
+            w.writerow({"sku": r.get("sku",""), "name": r.get("name","")})
 
-    # Excel dostu olarak yazdığımız için utf-8-sig ile açıyoruz
-    with open(path, "r", encoding="utf-8-sig", newline="") as f:
-        r = csv.DictReader(f)
-        rows = list(r)
-
-    # İlk limit kadar
-    return rows[:max(limit, 0)]
-
-def build_message(row: dict) -> str:
-    sku  = row.get("sku","").strip()
-    name = row.get("name","").strip()
-    price = row.get("price","").strip()
-    commission = row.get("commission","").strip()
-    est = row.get("estimated_commission","").strip()
-    est_try = row.get("estimated_commission_try","").strip()
-
-    lines = [
-        f"🛍️ *{name}*",
-        f"SKU: `{sku}`",
-    ]
-    if price: lines.append(f"Fiyat: {price}")
-    if commission: lines.append(f"Komisyon: {commission}")
-    if est: lines.append(f"Tahmini Komisyon: {est}")
-    if est_try: lines.append(f"Tahmini Komisyon (₺): {est_try}")
-
-    return "\n".join(lines)
-
-async def main():
-    if not SOURCES:
-        raise RuntimeError("TELEGRAM_SOURCE boş. Secrets kısmına @kanal veya t.me/… gir.")
-
-    rows = load_rows(CSV_PATH, BATCH_SIZE)
-    if not rows:
-        print("Gönderilecek satır yok.")
+async def run():
+    if API_ID == 0 or not API_HASH or not SESSION:
+        print("[TG] API/SESSION eksik, gönderim atlandı.")
         return
 
-    client = TelegramClient(SESSION, API_ID, API_HASH)
-    await client.start()
+    if not os.path.exists(PRETTY_CSV):
+        print("[TG] TRM_REPORT_PRETTY.csv yok; gönderim atlandı.")
+        return
 
-    # Her hedef için sırayla gönder
-    for dest in SOURCES:
-        print(f"Gönderim başlıyor → {dest} (adet={len(rows)})")
-        for row in rows:
-            msg = build_message(row)
+    df = pd.read_csv(PRETTY_CSV, dtype=str, encoding="utf-8", engine="python").fillna("")
+    sources = load_sources()
+    if not len(df):
+        print("[TG] Gönderilecek ürün yok.")
+        return
+    if not sources:
+        print("[TG] TELEGRAM_SOURCE boş; gönderim atlandı.")
+        return
+
+    already = load_log()
+    # tekrar gönderme
+    candidates = []
+    for _, row in df.iterrows():
+        sku = row.get("sku","").strip()
+        if not sku or sku in already:
+            continue
+        candidates.append(row.to_dict())
+        if len(candidates) >= BATCH:
+            break
+
+    if not candidates:
+        print("[TG] Yeni ürün bulunamadı (log’a göre).")
+        return
+
+    client = TelegramClient(StringSession(SESSION), API_ID, API_HASH)
+    await client.connect()
+    if not await client.is_user_authorized():
+        print("[TG] Session yetkisiz; yeni session gerekiyor.")
+        return
+
+    sent = []
+    for row in candidates:
+        name = row.get("name","").strip()
+        price = row.get("price","").strip()
+        url = row.get("url","").strip()
+        sku = row.get("sku","").strip()
+
+        # mesaj
+        lines = []
+        if name: lines.append(f"**{name}**")
+        if price: lines.append(f"Fiyat: {price}")
+        if url: lines.append(f"{url}")
+        else: lines.append(f"SKU: {sku}")
+        msg = "\n".join(lines)
+
+        for target in sources:
             try:
-                await client.send_message(dest, msg, parse_mode="md")
-            except Exception as e:
-                print(f"⚠️ Gönderim hatası ({dest}): {e}")
-        print(f"Gönderim bitti → {dest}")
+                entity = await client.get_entity(target)
+                await client.send_message(entity, msg, link_preview=True)
+            except FloodWaitError as e:
+                print(f"[TG] Flood wait: {e.seconds}s bekleniyor…")
+                await asyncio.sleep(e.seconds + 1)
+                entity = await client.get_entity(target)
+                await client.send_message(entity, msg, link_preview=True)
+            except Exception as ex:
+                print(f"[TG] '{target}' için hata: {ex}")
+
+        sent.append({"sku": sku, "name": name})
+
+    if sent:
+        append_log(sent)
+        print(f"[TG] {len(sent)} ürün gönderildi ve log’a işlendi.")
 
     await client.disconnect()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(run())
