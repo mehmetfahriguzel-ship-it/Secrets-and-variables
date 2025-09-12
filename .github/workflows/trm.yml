@@ -1,10 +1,9 @@
 name: TRM Cloud Automation
 
 on:
-  workflow_dispatch:
   schedule:
-    # Her gün 08:00-22:00 arasında her 2 saatte bir çalışır (UTC)
-    - cron: "0 6-20/2 * * *"
+    - cron: "0 */6 * * *"     # 6 saatte bir çalışır
+  workflow_dispatch:          # Manuel tetikleme butonu
 
 jobs:
   run-trm:
@@ -15,31 +14,26 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Scrape all products
-        env:
-          # Gerekirse scrape.py içinde kullanıyorsun
-          CATEGORIES_FILE: categories.txt
-        run: |
-          python trm_cloud/scrape.py
+      - name: Scrape products (安全 mod)
+        run: python trm_cloud/scrape_products.py
 
       - name: Post new products to Telegram
+        run: python trm_cloud/post_telegram.py
         env:
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
           TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
           TELEGRAM_SOURCE: ${{ secrets.TELEGRAM_SOURCE }}
-          TELEGRAM_BATCH: ${{ secrets.TELEGRAM_BATCH }}  # boşsa script içi default kullanılır
-        run: |
-          python trm_cloud/post_telegram.py
+          TELEGRAM_BATCH: ${{ secrets.TELEGRAM_BATCH }}
 
       - name: Upload reports
         uses: actions/upload-artifact@v4
