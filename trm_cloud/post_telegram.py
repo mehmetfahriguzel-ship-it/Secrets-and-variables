@@ -1,119 +1,84 @@
+# trm_cloud/post_telegram.py
+# Çalışma: GitHub Secrets -> TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION,
+# TELEGRAM_SOURCE (tek kanal @kanal veya birden çok satırlı liste), TELEGRAM_BATCH (opsiyonel).
+# Gönderim: TRM_REPORT_PRETTY.csv'den okur, her ürünü mesaj olarak yollar.
+
 import os
-import time
-from typing import Optional
-
-import pandas as pd
+import csv
+import asyncio
 from telethon import TelegramClient
-from telethon.sessions import StringSession
 
-
-# -------- helpers --------
-def env_int(name: str, default: int) -> int:
-    """Güvenli int parse: boş/yanlışsa default döner."""
-    val = os.getenv(name, "").strip()
-    if not val:
-        return default
-    try:
-        return int(val)
-    except ValueError:
-        return default
-
-
-def read_csv_any(path: str) -> pd.DataFrame:
-    """UTF-8/utf-8-sig/Windows kodlamalarına toleranslı oku."""
-    for enc in ("utf-8", "utf-8-sig", "cp1254", "latin1"):
-        try:
-            return pd.read_csv(path, encoding=enc)
-        except Exception:
-            continue
-    # son çare enkodlama belirtmeden dene
-    return pd.read_csv(path)
-
-
-def prettify_row(row: pd.Series) -> str:
-    """
-    CSV'de beklenen kolonlar:
-      sku_name, price, commission, estimated_commission, estimated_commission_try
-    Bulunmayan olursa olanlarla mesaj kurar.
-    """
-    parts = []
-    name = row.get("sku_name") or row.get("name") or row.get("title") or ""
-    price = row.get("price")
-    commission = row.get("commission")
-    est_comm = row.get("estimated_commission")
-    est_comm_try = row.get("estimated_commission_try")
-
-    if name:
-        parts.append(f"🛍️ {name}")
-    if pd.notna(price):
-        parts.append(f"💸 Fiyat: {price}")
-    if pd.notna(commission):
-        parts.append(f"📈 Komisyon: {commission}")
-    if pd.notna(est_comm):
-        parts.append(f"≈ Tahmini Komisyon: {est_comm}")
-    if pd.notna(est_comm_try):
-        parts.append(f"≈ Tahmini Komisyon (TRY): {est_comm_try}")
-
-    if not parts:
-        return "Yeni ürün"
-    return "\n".join(parts)
-
-
-# -------- env --------
-API_ID = os.environ["TELEGRAM_API_ID"]
+API_ID = int(os.environ["TELEGRAM_API_ID"])
 API_HASH = os.environ["TELEGRAM_API_HASH"]
-SESSION_STRING = os.environ["TELEGRAM_SESSION"]
+SESSION = os.environ["TELEGRAM_SESSION"]
 
-# Nereye post atılacak?
-# Sağlam bir varsayılan: "me" → Saved Messages
-TARGET = os.getenv("TELEGRAM_DEST", "").strip() or "me"
+# Kaynak/ hedef kanal(lar): birden fazla satır desteklenir (her satır bir kanal veya tam t.me linki)
+RAW_SOURCE = os.environ.get("TELEGRAM_SOURCE", "").strip()
+SOURCES = [s.strip() for s in RAW_SOURCE.splitlines() if s.strip()]
 
-# Kaç ürün gönderilsin? (hatalıysa 20)
-BATCH_SIZE = env_int("TELEGRAM_BATCH", 20)
+# Kaç mesaj yollayalım (int’e çevrilemezse 20)
+try:
+    BATCH_SIZE = int(os.environ.get("TELEGRAM_BATCH", "20").strip())
+except Exception:
+    BATCH_SIZE = 20
 
-# Hangi dosyadan okuyalım?
-# Öncelik güzel formatlı rapor; yoksa ürün listesi
-INPUTS = ["TRM_REPORT_PRETTY.csv", "TRM_PRODUCTS.csv"]
+CSV_PATH = "TRM_REPORT_PRETTY.csv"
 
+def load_rows(path: str, limit: int):
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"CSV bulunamadı: {path}")
 
-def main():
-    # veri oku
-    df: Optional[pd.DataFrame] = None
-    used_path = None
-    for p in INPUTS:
-        if os.path.exists(p):
-            df = read_csv_any(p)
-            used_path = p
-            break
-    if df is None or df.empty:
-        raise SystemExit("Gönderilecek veri bulunamadı. CSV yok ya da boş.")
+    # Excel dostu olarak yazdığımız için utf-8-sig ile açıyoruz
+    with open(path, "r", encoding="utf-8-sig", newline="") as f:
+        r = csv.DictReader(f)
+        rows = list(r)
 
-    # Mesaj gövdesini hazırlayalım
-    msgs = [prettify_row(r) for _, r in df.head(BATCH_SIZE).iterrows()]
+    # İlk limit kadar
+    return rows[:max(limit, 0)]
 
-    # Telegram istemcisi
-    client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
-    client.connect()
-    if not client.is_user_authorized():
-        raise SystemExit("Telegram oturum yetkili değil (SESSION_STRING geçersiz olabilir).")
+def build_message(row: dict) -> str:
+    sku  = row.get("sku","").strip()
+    name = row.get("name","").strip()
+    price = row.get("price","").strip()
+    commission = row.get("commission","").strip()
+    est = row.get("estimated_commission","").strip()
+    est_try = row.get("estimated_commission_try","").strip()
 
-    print(f"Kaynak dosya: {used_path}")
-    print(f"Hedef: {TARGET} | Gönderilecek öğe: {len(msgs)}")
+    lines = [
+        f"🛍️ *{name}*",
+        f"SKU: `{sku}`",
+    ]
+    if price: lines.append(f"Fiyat: {price}")
+    if commission: lines.append(f"Komisyon: {commission}")
+    if est: lines.append(f"Tahmini Komisyon: {est}")
+    if est_try: lines.append(f"Tahmini Komisyon (₺): {est_try}")
 
-    sent_rows = []
-    for i, msg in enumerate(msgs, 1):
-        client.send_message(TARGET, msg)
-        sent_rows.append(msg)
-        print(f"[{i}/{len(msgs)}] gönderildi")
-        time.sleep(1)  # nazik hız
+    return "\n".join(lines)
 
-    client.disconnect()
+async def main():
+    if not SOURCES:
+        raise RuntimeError("TELEGRAM_SOURCE boş. Secrets kısmına @kanal veya t.me/… gir.")
 
-    # Log/çıktı – Excel Türkçe karakter bozmaması için utf-8-sig
-    out = pd.DataFrame({"posted_message": sent_rows})
-    out.to_csv("POSTED_TO_TELEGRAM.csv", index=False, encoding="utf-8-sig")
-    print("Bitti: POSTED_TO_TELEGRAM.csv yazıldı.")
+    rows = load_rows(CSV_PATH, BATCH_SIZE)
+    if not rows:
+        print("Gönderilecek satır yok.")
+        return
 
+    client = TelegramClient(SESSION, API_ID, API_HASH)
+    await client.start()
+
+    # Her hedef için sırayla gönder
+    for dest in SOURCES:
+        print(f"Gönderim başlıyor → {dest} (adet={len(rows)})")
+        for row in rows:
+            msg = build_message(row)
+            try:
+                await client.send_message(dest, msg, parse_mode="md")
+            except Exception as e:
+                print(f"⚠️ Gönderim hatası ({dest}): {e}")
+        print(f"Gönderim bitti → {dest}")
+
+    await client.disconnect()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
