@@ -1,11 +1,41 @@
-- name: Post new products to Telegram
-  env:
-    TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
-    TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
-    TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
-    TELEGRAM_TARGETS: ${{ secrets.TELEGRAM_TARGETS }}
-    TELEGRAM_SOURCE: ${{ secrets.TELEGRAM_SOURCE }}
-    TELEGRAM_BATCH: ${{ secrets.TELEGRAM_BATCH }}
-    TELEGRAM_DELAY_MS: ${{ secrets.TELEGRAM_DELAY_MS }}
-  run: |
-    python trm_cloud/post_telegram.py
+name: TRM Cloud Automation
+
+on:
+  workflow_dispatch:  # Elle çalıştırma butonunu açar
+
+jobs:
+  run-trm:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Scrape all products
+        run: python trm_cloud/scrape.py
+
+      - name: Post new products to Telegram
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
+          TELEGRAM_SOURCE: ${{ secrets.TELEGRAM_SOURCE }}
+          # TELEGRAM_BATCH ve TELEGRAM_SLEEP verilmezse Python içinde varsayılan kullanılır
+        run: python trm_cloud/post_telegram.py
+
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: trm-reports
+          path: |
+            TRM_PRODUCTS.csv
+            TRM_REPORT_PRETTY.csv
+            TELEGRAM_PULL.csv
