@@ -3,66 +3,51 @@ name: TRM Cloud Automation
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */6 * * *"   # 6 saatte bir otomatik çalışır
+    # Her gün 08:00-22:00 arasında her 2 saatte bir çalışır (UTC)
+    - cron: "0 6-20/2 * * *"
 
 jobs:
   run-trm:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 🔹 TEST PING: Telegram bağlantısını doğrula
-      - name: Telegram test ping
-        env:
-          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
-          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
-          TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
-          TELEGRAM_DEST: ${{ secrets.TELEGRAM_DEST }}
-        run: |
-          python - <<'PY'
-          import os, asyncio
-          from telethon import TelegramClient
-          from telethon.sessions import StringSession
-
-          api_id = int(os.getenv("TELEGRAM_API_ID"))
-          api_hash = os.getenv("TELEGRAM_API_HASH")
-          session = os.getenv("TELEGRAM_SESSION")
-          dest = os.getenv("TELEGRAM_DEST") or "me"   # yoksa Saved Messages
-
-          async def main():
-              async with TelegramClient(StringSession(session), api_id, api_hash) as client:
-                  msg = "TRM test ✅ (workflow’dan gönderildi)"
-                  await client.send_message(dest, msg)
-                  print("SENT_OK ->", dest)
-
-          asyncio.run(main())
-          PY
-
-      # 🔹 Ürünleri tara ve gönder
       - name: Scrape all products
-        run: python trm_cloud/scraper.py
+        env:
+          # Gerekirse scrape.py içinde kullanıyorsun
+          CATEGORIES_FILE: categories.txt
+        run: |
+          python trm_cloud/scrape.py
 
       - name: Post new products to Telegram
         env:
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
           TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
-          TELEGRAM_DEST: ${{ secrets.TELEGRAM_DEST }}
-        run: python trm_cloud/post_telegram.py
+          TELEGRAM_SOURCE: ${{ secrets.TELEGRAM_SOURCE }}
+          TELEGRAM_BATCH: ${{ secrets.TELEGRAM_BATCH }}  # boşsa script içi default kullanılır
+        run: |
+          python trm_cloud/post_telegram.py
 
       - name: Upload reports
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: trm-reports
-          path: "*.csv"
+          path: |
+            TRM_PRODUCTS.csv
+            TRM_REPORT_PRETTY.csv
+            TELEGRAM_POST_LOG.csv
+          if-no-files-found: warn
+          retention-days: 7
